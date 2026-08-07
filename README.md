@@ -2,8 +2,7 @@
 
 This package corresponds to the manuscript titled **GSSFormer: A geometry-conditioned state-space network for semantic segmentation of full-scene traditional-village point clouds**.
 
-The default training protocol is fixed at 300 epochs. The training script does not provide an epoch override, and the evaluation script accepts only a final checkpoint saved at epoch 300. A checkpoint produced under the earlier 100-epoch setting must not be used for the reported results.
-
+The default training protocol is fixed at 300 epochs. The training script does not provide an epoch override, and the evaluation script accepts only a final checkpoint saved at epoch 300.
 ## Files
 
 - `config.py`: datasets, the 300-epoch protocol, and the ablation variants reported in Table 3
