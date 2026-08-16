@@ -10,7 +10,14 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from config import available_variants, get_experiment
-from dataset import SpatialBlockDataset, make_loader
+from dataset import (
+    SpatialBlockDataset,
+    load_attributes,
+    load_raw_scene,
+    make_loader,
+    scene_files,
+)
+from evaluate import confusion, infer, metrics
 
 
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -120,7 +127,27 @@ def edge_loss(edge_logits, targets, maximum):
     return torch.stack(losses).mean() if losses else None
 
 
-def save_checkpoint(path, model, optimizer, scheduler, epoch, experiment):
+def capture_rng_state():
+    return {
+        "python": random.getstate(),
+        "numpy": np.random.get_state(),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all(),
+    }
+
+
+def save_checkpoint(
+    path,
+    model,
+    optimizer,
+    scheduler,
+    epoch,
+    experiment,
+    validation_metrics,
+    best_validation_miou,
+    best_epoch,
+    checkpoint_role,
+):
     torch.save(
         {
             "epoch": epoch,
@@ -128,19 +155,19 @@ def save_checkpoint(path, model, optimizer, scheduler, epoch, experiment):
             "optimizer_state_dict": optimizer.state_dict(),
             "scheduler_state_dict": scheduler.state_dict(),
             "experiment": experiment,
-            "rng_state": {
-                "python": random.getstate(),
-                "numpy": np.random.get_state(),
-                "torch": torch.get_rng_state(),
-                "cuda": torch.cuda.get_rng_state_all(),
-            },
+            "validation_metrics": validation_metrics,
+            "best_validation_mIoU": float(best_validation_miou),
+            "best_epoch": int(best_epoch),
+            "selection_metric": "validation_mIoU",
+            "checkpoint_role": str(checkpoint_role),
+            "rng_state": capture_rng_state(),
         },
         path,
     )
 
 
-def restore_rng_state(checkpoint):
-    state = checkpoint.get("rng_state")
+def restore_rng_state(checkpoint_or_state):
+    state = checkpoint_or_state.get("rng_state", checkpoint_or_state)
     if not state:
         return
     random.setstate(state["python"])
@@ -148,6 +175,34 @@ def restore_rng_state(checkpoint):
     torch.set_rng_state(state["torch"])
     if torch.cuda.is_available() and state.get("cuda") is not None:
         torch.cuda.set_rng_state_all(state["cuda"])
+
+
+def validate(
+    model,
+    paths,
+    block_size,
+    stride,
+    device,
+    class_names,
+):
+    classes = len(class_names)
+    matrix = np.zeros((classes, classes), dtype=np.int64)
+    for path in paths:
+        xyz, rgb, labels = load_raw_scene(path)
+        normals, color_gradient, _ = load_attributes(path, xyz, rgb, None)
+        prediction, _ = infer(
+            model,
+            xyz,
+            rgb,
+            normals,
+            color_gradient,
+            block_size,
+            stride,
+            device,
+            classes,
+        )
+        matrix += confusion(prediction, labels, classes)
+    return metrics(matrix, class_names)
 
 
 def main():
@@ -158,7 +213,7 @@ def main():
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--num-workers", type=int, default=None)
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=3407)
     parser.add_argument("--resume", default=None)
     args = parser.parse_args()
 
@@ -170,6 +225,11 @@ def main():
     if args.num_workers is not None:
         training["num_workers"] = args.num_workers
     experiment["seed"] = args.seed
+    experiment["checkpoint_selection"] = {
+        "metric": "validation_mIoU",
+        "mode": "max",
+        "validation_seed": int(training["validation_seed"]),
+    }
     set_seed(args.seed)
 
     output = Path(args.output)
@@ -191,6 +251,10 @@ def main():
         training["num_workers"],
         True,
         args.seed,
+    )
+    validation_paths = scene_files(
+        experiment["data_root"],
+        experiment["val_areas"],
     )
 
     from models import create_model
@@ -229,6 +293,9 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, factor)
     start_epoch = 1
     history = []
+    best_validation_miou = float("-inf")
+    best_epoch = 0
+    validation_metrics = None
     if args.resume:
         checkpoint = torch.load(args.resume, map_location=args.device)
         saved_experiment = checkpoint.get("experiment", {})
@@ -238,6 +305,13 @@ def main():
                 "The resume checkpoint model configuration does not match "
                 "the requested variant."
             )
+        for split_key in ("train_areas", "val_areas", "test_areas"):
+            saved_split = saved_experiment.get(split_key)
+            if saved_split is not None and saved_split != experiment[split_key]:
+                raise ValueError(
+                    f"The resume checkpoint {split_key} does not match the "
+                    "current fixed data split."
+                )
         saved_training = saved_experiment.get("training")
         if saved_training is not None and int(saved_training.get("epochs", epochs)) != epochs:
             raise ValueError(
@@ -255,6 +329,11 @@ def main():
         scheduler.load_state_dict(checkpoint["scheduler_state_dict"])
         restore_rng_state(checkpoint)
         start_epoch = int(checkpoint["epoch"]) + 1
+        best_validation_miou = float(
+            checkpoint.get("best_validation_mIoU", float("-inf"))
+        )
+        best_epoch = int(checkpoint.get("best_epoch", 0))
+        validation_metrics = checkpoint.get("validation_metrics")
         history_path = output / "history.json"
         if history_path.exists():
             history = json.loads(history_path.read_text(encoding="utf-8"))
@@ -334,16 +413,58 @@ def main():
                 f"Non-finite model parameter after epoch {epoch}"
             )
 
+        rng_state = capture_rng_state()
+        try:
+            set_seed(int(training["validation_seed"]))
+            validation_metrics = validate(
+                model,
+                validation_paths,
+                experiment["block_size"],
+                experiment["stride"],
+                args.device,
+                experiment["class_names"],
+            )
+        finally:
+            restore_rng_state(rng_state)
+        model.train()
+
+        validation_miou = float(validation_metrics["mIoU"])
+        if not np.isfinite(validation_miou):
+            raise FloatingPointError(
+                f"Non-finite validation mIoU after epoch {epoch}"
+            )
+        is_best = validation_miou > best_validation_miou
+        if is_best:
+            best_validation_miou = validation_miou
+            best_epoch = epoch
+
         record = {
             "epoch": epoch,
             "loss": total / max(batches, 1),
             "segmentation_loss": segmentation_total / max(batches, 1),
             "boundary_loss": boundary_total / max(batches, 1),
             "learning_rate": optimizer.param_groups[0]["lr"],
+            "validation_mIoU": validation_miou,
+            "validation_OA": float(validation_metrics["OA"]),
+            "best_validation_mIoU": best_validation_miou,
+            "best_epoch": best_epoch,
         }
         history.append(record)
         with open(output / "history.json", "w", encoding="utf-8") as file:
             json.dump(history, file, ensure_ascii=False, indent=2)
+        if is_best:
+            save_checkpoint(
+                output / "best_model.pth",
+                model,
+                optimizer,
+                scheduler,
+                epoch,
+                experiment,
+                validation_metrics,
+                best_validation_miou,
+                best_epoch,
+                "best_validation",
+            )
         save_checkpoint(
             output / "last_model.pth",
             model,
@@ -351,6 +472,10 @@ def main():
             scheduler,
             epoch,
             experiment,
+            validation_metrics,
+            best_validation_miou,
+            best_epoch,
+            "last",
         )
         print(record)
 
@@ -361,6 +486,17 @@ def main():
         scheduler,
         epochs,
         experiment,
+        validation_metrics,
+        best_validation_miou,
+        best_epoch,
+        "final",
+    )
+    print(
+        {
+            "best_epoch": best_epoch,
+            "best_validation_mIoU": best_validation_miou,
+            "checkpoint": str(output / "best_model.pth"),
+        }
     )
 
 
