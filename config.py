@@ -9,7 +9,8 @@ DATASETS = {
             "Ancient road",
             "Ancient building",
         ],
-        "train_areas": ["Area_1", "Area_2", "Area_3", "Area_4", "Area_5"],
+        "train_areas": ["Area_1", "Area_2", "Area_3", "Area_4"],
+        "val_areas": ["Area_5"],
         "test_areas": ["Area_6"],
         "block_size": 20.0,
         "stride": 10.0,
@@ -31,7 +32,6 @@ DATASETS = {
             "Water",
         ],
         "train_areas": [
-            "birmingham_block_0",
             "birmingham_block_1",
             "birmingham_block_2",
             "birmingham_block_3",
@@ -41,10 +41,13 @@ DATASETS = {
             "cambridge_block_6",
             "cambridge_block_9",
             "cambridge_block_15",
-            "cambridge_block_16",
             "cambridge_block_21",
             "cambridge_block_27",
             "cambridge_block_28",
+        ],
+        "val_areas": [
+            "birmingham_block_0",
+            "cambridge_block_16",
         ],
         "test_areas": [
             "birmingham_block_4",
@@ -137,6 +140,7 @@ TRAINING = {
     "num_workers": 6,
     "minimum_block_points": 2,
     "block_sampling_attempts": 32,
+    "validation_seed": 3407,
 }
 
 
@@ -160,6 +164,21 @@ def get_experiment(name, data_root, variant="gssformer"):
         )
 
     experiment = deepcopy(DATASETS[name])
+    split_keys = ("train_areas", "val_areas", "test_areas")
+    for key in split_keys:
+        if not experiment.get(key):
+            raise ValueError(f"Dataset {name} has an empty {key} split")
+        if len(experiment[key]) != len(set(experiment[key])):
+            raise ValueError(f"Dataset {name} contains duplicates in {key}")
+    for left_index, left_key in enumerate(split_keys):
+        left = set(experiment[left_key])
+        for right_key in split_keys[left_index + 1:]:
+            overlap = left.intersection(experiment[right_key])
+            if overlap:
+                raise ValueError(
+                    f"Dataset {name} has overlapping {left_key}/{right_key}: "
+                    f"{sorted(overlap)}"
+                )
     model = deepcopy(BASE_MODEL)
     model.update(deepcopy(MODEL_VARIANTS[variant]))
 
