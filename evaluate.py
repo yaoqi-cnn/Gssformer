@@ -1,7 +1,6 @@
 import argparse
 import json
 import random
-import secrets
 from copy import deepcopy
 from pathlib import Path
 
@@ -169,6 +168,11 @@ def _resolve_experiment(args, checkpoint):
         )
     if saved.get("class_names") not in (None, current["class_names"]):
         raise ValueError("Checkpoint class order does not match the dataset config")
+    for split_key in ("train_areas", "val_areas", "test_areas"):
+        if saved.get(split_key) not in (None, current[split_key]):
+            raise ValueError(
+                f"Checkpoint {split_key} does not match the current fixed split"
+            )
 
     experiment = deepcopy(current)
     if args.variant is None:
@@ -190,7 +194,7 @@ def main():
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=3407)
     prediction_group = parser.add_mutually_exclusive_group()
     prediction_group.add_argument("--save-predictions", action="store_true")
     prediction_group.add_argument("--no-save-predictions", action="store_true")
@@ -201,16 +205,30 @@ def main():
 
     checkpoint = torch.load(args.checkpoint, map_location=args.device)
     experiment = _resolve_experiment(args, checkpoint)
-    expected_epochs = int(experiment["training"]["epochs"])
     if "epoch" not in checkpoint:
         raise ValueError(
             "Checkpoint epoch metadata is missing. Paper-aligned evaluation "
-            "requires the final 300-epoch checkpoint."
+            "requires the checkpoint selected by validation mIoU."
         )
-    if int(checkpoint["epoch"]) != expected_epochs:
+    if checkpoint.get("selection_metric") != "validation_mIoU":
         raise ValueError(
-            f"Checkpoint epoch={int(checkpoint['epoch'])}; the paper protocol "
-            f"requires epoch={expected_epochs}."
+            "Paper-aligned evaluation requires a checkpoint selected by "
+            "validation mIoU."
+        )
+    if checkpoint.get("checkpoint_role") != "best_validation":
+        raise ValueError(
+            "Use best_model.pth for test evaluation; last_model.pth and "
+            "final_model.pth are not validation-selected checkpoints."
+        )
+    best_epoch = int(checkpoint.get("best_epoch", -1))
+    checkpoint_epoch = int(checkpoint["epoch"])
+    if best_epoch != checkpoint_epoch:
+        raise ValueError(
+            f"Checkpoint epoch={checkpoint_epoch}, but best_epoch={best_epoch}."
+        )
+    if "best_validation_mIoU" not in checkpoint:
+        raise ValueError(
+            "The checkpoint does not contain best_validation_mIoU metadata."
         )
     evaluation = experiment["evaluation"]
     runs = int(evaluation["num_runs"])
@@ -223,7 +241,7 @@ def main():
         save_predictions = False
 
 
-    base_seed = args.seed if args.seed is not None else secrets.randbelow(2**31)
+    base_seed = int(args.seed)
 
     output = Path(args.output)
     output.mkdir(parents=True, exist_ok=True)
@@ -300,8 +318,14 @@ def main():
 
     summary = {
         "checkpoint": str(Path(args.checkpoint)),
+        "checkpoint_epoch": checkpoint_epoch,
+        "best_validation_mIoU": float(checkpoint["best_validation_mIoU"]),
+        "selection_metric": checkpoint["selection_metric"],
         "variant": experiment.get("variant"),
         "model": experiment["model"],
+        "train_areas": experiment["train_areas"],
+        "val_areas": experiment["val_areas"],
+        "test_areas": experiment["test_areas"],
         "run_seeds": run_seeds,
         "mean": average(run_results, experiment["class_names"]),
         "runs": run_results,
