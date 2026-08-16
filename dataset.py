@@ -5,7 +5,6 @@ import torch
 from scipy.spatial import cKDTree
 from torch.utils.data import DataLoader, Dataset
 
-
 ATTRIBUTE_K = 16
 BOUNDARY_K = 16
 ATTRIBUTE_CACHE_VERSION = 2
