@@ -172,6 +172,7 @@ class PointSequential(PointModule):
                 else: input = module(input)
         return input
 
+
 class GeometrySelectiveSSM(nn.Module):
 
 
