@@ -297,7 +297,7 @@ def main():
     best_epoch = 0
     validation_metrics = None
     if args.resume:
-        checkpoint = torch.load(args.resume, map_location=args.device)
+        checkpoint = torch.load(args.resume, map_location=args.device,weights_only=False,)
         saved_experiment = checkpoint.get("experiment", {})
         saved_model = saved_experiment.get("model")
         if saved_model is not None and saved_model != experiment["model"]:
