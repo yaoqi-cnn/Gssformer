@@ -38,11 +38,9 @@ Use the same seed and protocol for all ablation variants. The comparison methods
 ## Evaluation
 
 ```bash
-python evaluate.py --dataset village --data-root /path/to/village --checkpoint outputs/village/gssformer/final_model.pth --output outputs/village/gssformer/test --seed 3407
+python evaluate.py --dataset village --data-root /path/to/village --checkpoint outputs/village/gssformer/best_model.pth --output outputs/village/gssformer/test --seed 3407
 ```
 
 ```bash
-python evaluate.py --dataset sensaturban --data-root /path/to/sensaturban --checkpoint outputs/sensaturban/gssformer/final_model.pth --output outputs/sensaturban/gssformer/test --seed 3407
+python evaluate.py --dataset sensaturban --data-root /path/to/sensaturban --checkpoint outputs/sensaturban/gssformer/best_model.pth --output outputs/sensaturban/gssformer/test --seed 3407
 ```
-
-Evaluation always performs three independent full-scene inference runs. The individual results, run seeds, mean metrics, and standard deviations are written to `summary.json`.
