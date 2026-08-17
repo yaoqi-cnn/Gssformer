@@ -203,7 +203,7 @@ def main():
     if not torch.cuda.is_available() and str(args.device).startswith("cuda"):
         raise RuntimeError("CUDA is required for the paper configuration")
 
-    checkpoint = torch.load(args.checkpoint, map_location=args.device)
+    checkpoint = torch.load(args.checkpoint, map_location=args.device,weights_only=False,)
     experiment = _resolve_experiment(args, checkpoint)
     if "epoch" not in checkpoint:
         raise ValueError(
