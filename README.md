@@ -1,6 +1,6 @@
 # GSSFormer paper-aligned code
 
-This package corresponds to the manuscript titled **GSSFormer: A geometry-conditioned state-space network for semantic segmentation of 
+This repository provides the paper-aligned implementation of GSSFormer.
 ## Files
 
 - `config.py`: datasets, the 300-epoch protocol, and the ablation variants reported in Table 3
